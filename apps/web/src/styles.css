@@ -1,0 +1,114 @@
+@import "tailwindcss";
+
+@font-face {
+  font-family: "Bagel Fat One";
+  font-style: normal;
+  font-display: swap;
+  font-weight: 400;
+  src: url("@fontsource/bagel-fat-one/files/bagel-fat-one-latin-400-normal.woff2") format("woff2");
+}
+
+@font-face {
+  font-family: "Nunito Variable";
+  font-style: normal;
+  font-display: swap;
+  font-weight: 200 1000;
+  src: url("@fontsource-variable/nunito/files/nunito-latin-wght-normal.woff2")
+    format("woff2-variations");
+}
+
+@theme {
+  --color-bg: #1b1340;
+  --color-bg-accent: #2d1b69;
+  --color-primary: #ffe66d;
+  --color-secondary: #ff6b6b;
+  --color-accent: #4ecdc4;
+  --color-ink: #0f0a2a;
+  --color-paper: #fff8e7;
+
+  --font-display: "Bagel Fat One", system-ui, sans-serif;
+  --font-sans: "Nunito Variable", "Nunito", system-ui, sans-serif;
+}
+
+@layer base {
+  html,
+  body,
+  #app {
+    @apply m-0 p-0 h-full overscroll-none text-paper;
+    font-family: var(--font-sans);
+    background: radial-gradient(ellipse at top, var(--color-bg-accent), var(--color-bg));
+    background-attachment: fixed;
+  }
+  h1,
+  h2,
+  h3,
+  .display {
+    font-family: var(--font-display);
+    letter-spacing: 0.02em;
+  }
+}
+
+@layer components {
+  .belch-btn {
+    @apply inline-block cursor-pointer rounded-2xl border-4 border-ink bg-primary px-6 py-3 text-ink;
+    font-family: var(--font-display);
+    font-size: 1.4rem;
+    box-shadow: 0 6px 0 var(--color-ink);
+    transition:
+      transform 80ms ease,
+      box-shadow 80ms ease;
+  }
+  .belch-btn:active {
+    transform: translateY(4px);
+    box-shadow: 0 2px 0 var(--color-ink);
+  }
+  .belch-btn:disabled {
+    @apply cursor-not-allowed opacity-50;
+  }
+
+  .belch-input {
+    @apply w-full rounded-2xl border-4 border-ink bg-paper px-4 py-3 text-center uppercase text-ink;
+    font-family: var(--font-display);
+    font-size: 1.4rem;
+  }
+  .belch-input.lower {
+    @apply normal-case text-left;
+  }
+
+  .belch-tile {
+    @apply relative inline-block rounded-2xl border-4 border-ink px-6 py-3 text-ink;
+    font-family: var(--font-display);
+    font-size: 1.6rem;
+    box-shadow: 0 6px 0 var(--color-ink);
+  }
+  .belch-tile-lg {
+    @apply rounded-2xl border-4 border-ink px-8 py-4 text-ink;
+    font-family: var(--font-display);
+    font-size: 2rem;
+    box-shadow: 0 6px 0 var(--color-ink);
+  }
+
+  .belch-card {
+    @apply grid place-items-center rounded-3xl border-4 border-ink p-8 text-ink;
+    font-family: var(--font-display);
+    box-shadow: 0 8px 0 var(--color-ink);
+    min-height: 140px;
+    line-height: 1.2;
+    font-size: clamp(1.4rem, 2.4vw, 2rem);
+  }
+
+  .belch-code {
+    font-family: var(--font-display);
+    font-size: clamp(4rem, 18vw, 12rem);
+    letter-spacing: 0.15em;
+    color: var(--color-primary);
+    text-shadow:
+      0 8px 0 var(--color-ink),
+      0 16px 30px rgba(0, 0, 0, 0.4);
+  }
+
+  .belch-badge {
+    @apply absolute -right-3 -top-3 grid h-9 w-9 place-items-center rounded-full border-[3px] border-ink bg-paper text-ink;
+    font-size: 1.2rem;
+  }
+}

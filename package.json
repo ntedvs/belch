@@ -1,7 +1,24 @@
 {
   "name": "belch",
-  "version": "0.0.0",
   "workspaces": [
+    "apps/*",
     "packages/*"
-  ]
+  ],
+  "type": "module",
+  "scripts": {
+    "dev": "bun run --parallel dev:server dev:web",
+    "dev:server": "bun --filter server dev",
+    "dev:web": "bun --filter web dev",
+    "dev:prod": "bun run build && bun --filter server dev",
+    "build": "bun --filter '*' --if-present build",
+    "deploy": "bun run build && bun --filter server deploy",
+    "test": "bun test",
+    "typecheck": "bun --filter '*' typecheck"
+  },
+  "devDependencies": {
+    "@types/node": "25.7.0",
+    "oxfmt": "0.49.0",
+    "typescript": "6.0.3",
+    "wrangler": "4.90.0"
+  }
 }
