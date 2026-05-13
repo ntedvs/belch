@@ -37,6 +37,9 @@ export const PlayerToken = z.string().uuid()
 export const HostToken = z.string().uuid()
 export const PlayerName = z.string().min(1).max(20)
 
+export const GameType = z.enum(["quiplash", "fibbage"])
+export type GameType = z.infer<typeof GameType>
+
 export type Phase = "lobby" | "writing" | "voting" | "reveal" | "final"
 export const Phase = z.enum(["lobby", "writing", "voting", "reveal", "final"])
 
@@ -51,6 +54,24 @@ export const Matchup = z.object({
   revealed: z.boolean(),
 })
 export type Matchup = z.infer<typeof Matchup>
+
+export const FibbageChoice = z.object({
+  id: z.string(),
+  text: z.string().max(ANSWER_MAX_LEN),
+  authorId: PlayerId.nullable(),
+  isTruth: z.boolean(),
+})
+export type FibbageChoice = z.infer<typeof FibbageChoice>
+
+export const FibbageRound = z.object({
+  question: z.string(),
+  truth: z.string().max(ANSWER_MAX_LEN),
+  lies: z.record(PlayerId, z.string().max(ANSWER_MAX_LEN)),
+  choices: z.array(FibbageChoice),
+  votes: z.record(PlayerId, z.string()),
+  revealed: z.boolean(),
+})
+export type FibbageRound = z.infer<typeof FibbageRound>
 
 export type AuthorPair = [string, string]
 
@@ -75,7 +96,7 @@ export function chooseAuthorPair(args: {
 export function visibleMatchupFor(args: {
   matchup: Matchup | null
   phase: Phase
-  viewer?: { playerId?: string }
+  viewer?: { role?: "host" | "guest"; playerId?: string }
 }): Matchup | null {
   const { matchup, phase, viewer } = args
   if (!matchup) return null
@@ -92,11 +113,49 @@ export function visibleMatchupFor(args: {
     }
   }
 
-  if (phase === "voting" && viewer?.playerId && matchup.votes[viewer.playerId] !== undefined) {
+  if (phase === "voting" && viewer?.role === "host") {
+    Object.assign(votes, matchup.votes)
+  } else if (
+    phase === "voting" &&
+    viewer?.playerId &&
+    matchup.votes[viewer.playerId] !== undefined
+  ) {
     votes[viewer.playerId] = matchup.votes[viewer.playerId]!
   }
 
   return { ...matchup, answers, votes }
+}
+
+export function visibleFibbageFor(args: {
+  round: FibbageRound | null
+  phase: Phase
+  viewer?: { role?: "host" | "guest"; playerId?: string }
+}): FibbageRound | null {
+  const { round, phase, viewer } = args
+  if (!round) return null
+  if (phase === "reveal" || phase === "final") return round
+
+  const votes: FibbageRound["votes"] = {}
+  if (phase === "voting" && viewer?.role === "host") {
+    Object.assign(votes, round.votes)
+  } else if (phase === "voting" && viewer?.playerId && round.votes[viewer.playerId] !== undefined) {
+    votes[viewer.playerId] = round.votes[viewer.playerId]!
+  }
+
+  const lies =
+    viewer?.role === "host"
+      ? round.lies
+      : phase === "writing" && viewer?.playerId && round.lies[viewer.playerId]
+        ? { [viewer.playerId]: round.lies[viewer.playerId]! }
+        : {}
+
+  return {
+    ...round,
+    truth: phase === "writing" || phase === "voting" ? "" : round.truth,
+    lies,
+    choices: phase === "voting" ? round.choices.map((c) => ({ ...c, isTruth: false })) : [],
+    votes,
+  }
 }
 
 export const storageKeys = {
@@ -136,6 +195,7 @@ function shuffle<T>(items: T[], random: () => number) {
 }
 
 export const GameState = z.object({
+  gameType: GameType,
   phase: Phase,
   players: z.array(Player),
   connectedPlayerIds: z.array(PlayerId),
@@ -144,19 +204,23 @@ export const GameState = z.object({
   totalRounds: z.number().int().nonnegative(),
   phaseEndsAt: z.number().int().nonnegative().nullable(),
   matchup: Matchup.nullable(),
+  fibbage: FibbageRound.nullable(),
 })
 export type GameState = z.infer<typeof GameState>
 
 export const PersistedRoomState = z.object({
   created: z.boolean().optional(),
+  gameType: GameType.optional(),
   hostToken: HostToken.nullable(),
   playerTokens: z.array(z.tuple([PlayerId, PlayerToken])),
   players: z.array(z.tuple([PlayerId, Player])),
   scores: z.array(z.tuple([PlayerId, z.number().int().nonnegative()])),
   authorCounts: z.array(z.tuple([PlayerId, z.number().int().nonnegative()])).optional(),
   prompts: z.array(z.string()),
+  fibbageTruths: z.array(z.string()).optional(),
   promptIdx: z.number().int().nonnegative(),
   matchup: Matchup.nullable(),
+  fibbage: FibbageRound.nullable().optional(),
   phaseEndsAt: z.number().int().nonnegative().nullable().optional(),
   phase: Phase,
 })
@@ -171,9 +235,10 @@ export const ClientMessage = z.discriminatedUnion("t", [
     playerId: PlayerId.optional(),
     playerToken: PlayerToken.optional(),
   }),
+  z.object({ t: z.literal("setGame"), gameType: GameType }),
   z.object({ t: z.literal("start") }),
   z.object({ t: z.literal("submit"), answer: z.string().min(1).max(ANSWER_MAX_LEN) }),
-  z.object({ t: z.literal("vote"), choice: z.union([z.literal(0), z.literal(1)]) }),
+  z.object({ t: z.literal("vote"), choice: z.union([z.literal(0), z.literal(1), z.string()]) }),
   z.object({ t: z.literal("next") }),
   z.object({ t: z.literal("ping") }),
 ])

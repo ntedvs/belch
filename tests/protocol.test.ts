@@ -3,6 +3,7 @@ import {
   ANSWER_MAX_LEN,
   chooseAuthorPair,
   ClientMessage,
+  FibbageRound,
   generateRoomCode,
   GameState,
   type Matchup,
@@ -10,6 +11,7 @@ import {
   PLAYER_COLORS,
   RoomCode,
   storageKeys,
+  visibleFibbageFor,
   visibleMatchupFor,
 } from "../packages/protocol/src/index"
 
@@ -70,6 +72,7 @@ describe("protocol validation", () => {
   test("accepts game states with connected player ids", () => {
     const parsed = GameState.safeParse({
       phase: "lobby",
+      gameType: "quiplash",
       players: [{ id: playerId, name: "Nate", color: PLAYER_COLORS[0] }],
       connectedPlayerIds: [playerId],
       scores: { [playerId]: 0 },
@@ -77,6 +80,7 @@ describe("protocol validation", () => {
       totalRounds: 5,
       phaseEndsAt: null,
       matchup: null,
+      fibbage: null,
     })
 
     expect(parsed.success).toBe(true)
@@ -89,8 +93,10 @@ describe("protocol validation", () => {
       players: [[playerId, { id: playerId, name: "Nate", color: PLAYER_COLORS[0] }]],
       scores: [[playerId, -100]],
       prompts: ["Prompt"],
+      fibbageTruths: [],
       promptIdx: 0,
       matchup: null,
+      fibbage: null,
       phaseEndsAt: null,
       phase: "lobby",
     })
@@ -115,6 +121,7 @@ describe("protocol validation", () => {
         [otherPlayerId, 1],
       ],
       prompts: ["Prompt"],
+      fibbageTruths: [],
       promptIdx: 0,
       matchup: {
         prompt: "Prompt",
@@ -123,9 +130,16 @@ describe("protocol validation", () => {
         votes: {},
         revealed: false,
       },
+      fibbage: null,
       phaseEndsAt: Date.now() + 60_000,
       phase: "writing",
     })
+
+    expect(parsed.success).toBe(true)
+  })
+
+  test("accepts string vote choices for multi-choice games", () => {
+    const parsed = ClientMessage.safeParse({ t: "vote", choice: "truth" })
 
     expect(parsed.success).toBe(true)
   })
@@ -225,10 +239,86 @@ describe("matchup redaction", () => {
     expect(visible?.votes).toEqual({ [thirdPlayerId]: 0 })
   })
 
+  test("lets the host count votes during voting", () => {
+    const visible = visibleMatchupFor({
+      matchup,
+      phase: "voting",
+      viewer: { role: "host" },
+    })
+
+    expect(visible?.votes).toEqual({ [thirdPlayerId]: 0 })
+  })
+
   test("shows answers and votes after reveal", () => {
     const visible = visibleMatchupFor({ matchup, phase: "reveal" })
 
     expect(visible).toEqual(matchup)
+  })
+})
+
+describe("fibbage redaction", () => {
+  const round: FibbageRound = {
+    question: "A strange question",
+    truth: "real answer",
+    lies: { [playerId]: "fake answer" },
+    choices: [
+      { id: "truth", text: "real answer", authorId: null, isTruth: true },
+      { id: `lie:${playerId}`, text: "fake answer", authorId: playerId, isTruth: false },
+    ],
+    votes: { [otherPlayerId]: "truth" },
+    revealed: false,
+  }
+
+  test("hides truth and other lies during writing", () => {
+    const visible = visibleFibbageFor({
+      round,
+      phase: "writing",
+      viewer: { playerId: otherPlayerId },
+    })
+
+    expect(visible?.truth).toBe("")
+    expect(visible?.lies).toEqual({})
+    expect(visible?.choices).toEqual([])
+  })
+
+  test("lets the host count submitted lies during writing", () => {
+    const visible = visibleFibbageFor({
+      round,
+      phase: "writing",
+      viewer: { role: "host" },
+    })
+
+    expect(visible?.truth).toBe("")
+    expect(visible?.lies).toEqual({ [playerId]: "fake answer" })
+  })
+
+  test("hides which voting choice is true until reveal", () => {
+    const visible = visibleFibbageFor({
+      round,
+      phase: "voting",
+      viewer: { playerId: otherPlayerId },
+    })
+
+    expect(visible?.choices.map((choice) => choice.isTruth)).toEqual([false, false])
+    expect(visible?.votes).toEqual({ [otherPlayerId]: "truth" })
+  })
+
+  test("lets the host count votes without revealing the truth during voting", () => {
+    const visible = visibleFibbageFor({
+      round,
+      phase: "voting",
+      viewer: { role: "host" },
+    })
+
+    expect(visible?.choices.map((choice) => choice.isTruth)).toEqual([false, false])
+    expect(visible?.truth).toBe("")
+    expect(visible?.votes).toEqual({ [otherPlayerId]: "truth" })
+  })
+
+  test("shows truth and authors after reveal", () => {
+    const visible = visibleFibbageFor({ round, phase: "reveal" })
+
+    expect(visible).toEqual(round)
   })
 })
 

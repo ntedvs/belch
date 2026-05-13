@@ -1,5 +1,7 @@
 import {
+  type FibbageChoice,
   type GameState,
+  type GameType,
   type Player,
   ROOM_CODE_LENGTH,
   ServerMessage,
@@ -278,6 +280,21 @@ function Landing() {
   )
 }
 
+function GamePick(props: { gameType: GameType; active: boolean }) {
+  return (
+    <button
+      type="button"
+      class={`rounded-2xl border-4 border-ink px-4 py-3 text-ink ${
+        props.active ? "bg-primary" : "bg-paper"
+      }`}
+      style={{ "box-shadow": "0 4px 0 var(--color-ink)", "font-family": "var(--font-display)" }}
+      onClick={() => send({ t: "setGame", gameType: props.gameType })}
+    >
+      {gameName(props.gameType)}
+    </button>
+  )
+}
+
 // ---------- Guest route (name entry vs game) ----------
 
 function GuestRoute() {
@@ -336,13 +353,19 @@ function HostView() {
           <HostLobby code={code()} />
         </Match>
         <Match when={gs()!.phase === "writing"}>
-          <HostWriting code={code()} />
+          <Show when={gs()!.gameType === "fibbage"} fallback={<HostWriting code={code()} />}>
+            <HostFibbageWriting code={code()} />
+          </Show>
         </Match>
         <Match when={gs()!.phase === "voting"}>
-          <HostVoting code={code()} />
+          <Show when={gs()!.gameType === "fibbage"} fallback={<HostVoting code={code()} />}>
+            <HostFibbageVoting code={code()} />
+          </Show>
         </Match>
         <Match when={gs()!.phase === "reveal"}>
-          <HostReveal code={code()} />
+          <Show when={gs()!.gameType === "fibbage"} fallback={<HostReveal code={code()} />}>
+            <HostFibbageReveal code={code()} />
+          </Show>
         </Match>
         <Match when={gs()!.phase === "final"}>
           <HostFinal />
@@ -396,6 +419,7 @@ function HostLobby(props: { code: string }) {
             <div class="belch-code" style={{ "font-size": "clamp(4rem,10vw,8rem)" }}>
               {props.code}
             </div>
+            <div class="display mt-2 text-xl opacity-70">{gameName(gs()!.gameType)}</div>
           </div>
         </div>
       </header>
@@ -407,13 +431,94 @@ function HostLobby(props: { code: string }) {
           <For each={players()}>{(p) => <PlayerTile player={p} />}</For>
         </Show>
       </section>
-      <footer class="text-center">
+      <footer class="grid justify-items-center gap-4 text-center">
+        <GamePicker />
         <button
           class="belch-btn"
           disabled={players().length < 3}
           onClick={() => send({ t: "start" })}
         >
           {players().length < 3 ? `Need ${3 - players().length} more` : "Start"}
+        </button>
+      </footer>
+    </main>
+  )
+}
+
+function GamePicker() {
+  return (
+    <div class="grid w-full max-w-sm grid-cols-2 gap-3">
+      <GamePick gameType="quiplash" active={gs()!.gameType === "quiplash"} />
+      <GamePick gameType="fibbage" active={gs()!.gameType === "fibbage"} />
+    </div>
+  )
+}
+
+function HostFibbageWriting(props: { code: string }) {
+  const f = () => gs()!.fibbage!
+  const submitted = () => Object.keys(f().lies).length
+  return (
+    <main class="grid h-screen grid-rows-[auto_1fr] gap-8 p-8 text-center">
+      <RoundHeader code={props.code} />
+      <section class="grid place-items-center gap-8">
+        <Countdown />
+        <h2
+          class="display max-w-[22ch] text-primary leading-tight"
+          style={{ "font-size": "clamp(2rem,5vw,4rem)" }}
+        >
+          {f().question}
+        </h2>
+        <div class="opacity-70">
+          {submitted()}/{gs()!.connectedPlayerIds.length} lies in
+        </div>
+      </section>
+    </main>
+  )
+}
+
+function HostFibbageVoting(props: { code: string }) {
+  const f = () => gs()!.fibbage!
+  const voted = () => Object.keys(f().votes).length
+  return (
+    <main class="grid h-screen grid-rows-[auto_1fr_auto] gap-8 p-8 text-center">
+      <RoundHeader code={props.code} />
+      <section class="grid content-center gap-8">
+        <h2
+          class="display mx-auto max-w-[24ch] text-primary leading-tight"
+          style={{ "font-size": "clamp(1.8rem,4vw,3rem)" }}
+        >
+          {f().question}
+        </h2>
+        <div class="mx-auto grid w-full max-w-[1200px] grid-cols-2 gap-5">
+          <For each={f().choices}>{(choice, i) => <AnswerCard text={choice.text} idx={i()} />}</For>
+        </div>
+      </section>
+      <footer class="opacity-70">
+        {voted()}/{gs()!.connectedPlayerIds.length} votes in
+      </footer>
+    </main>
+  )
+}
+
+function HostFibbageReveal(props: { code: string }) {
+  const f = () => gs()!.fibbage!
+  const votesFor = (id: string) => Object.values(f().votes).filter((v) => v === id).length
+  return (
+    <main class="grid h-screen grid-rows-[auto_1fr_auto] gap-8 p-8 text-center">
+      <RoundHeader code={props.code} />
+      <section class="grid content-center gap-6">
+        <h2 class="display mx-auto max-w-[24ch] text-primary text-4xl leading-tight">
+          {f().question}
+        </h2>
+        <div class="mx-auto grid w-full max-w-[1200px] grid-cols-2 gap-5">
+          <For each={f().choices}>
+            {(choice) => <FibbageRevealCard choice={choice} votes={votesFor(choice.id)} />}
+          </For>
+        </div>
+      </section>
+      <footer>
+        <button class="belch-btn" onClick={() => send({ t: "next" })}>
+          {gs()!.round >= gs()!.totalRounds ? "Finish" : "Next Round"}
         </button>
       </footer>
     </main>
@@ -482,7 +587,10 @@ function HostReveal(props: { code: string }) {
   const tally = () => {
     let v0 = 0
     let v1 = 0
-    for (const c of Object.values(m().votes)) c === 0 ? v0++ : v1++
+    for (const c of Object.values(m().votes)) {
+      if (c === 0) v0++
+      else v1++
+    }
     return { v0, v1 }
   }
   const winner = () => {
@@ -529,7 +637,7 @@ function HostFinal() {
   const ranked = () =>
     [...gs()!.players].sort((a, b) => (gs()!.scores[b.id] ?? 0) - (gs()!.scores[a.id] ?? 0))
   return (
-    <main class="grid h-screen grid-rows-[auto_1fr] gap-8 p-8 text-center">
+    <main class="grid h-screen grid-rows-[auto_1fr_auto] gap-8 p-8 text-center">
       <header>
         <h1 class="display m-0 text-primary" style={{ "font-size": "clamp(2.5rem,7vw,5rem)" }}>
           FINAL SCORES
@@ -549,6 +657,16 @@ function HostFinal() {
           )}
         </For>
       </section>
+      <footer class="grid justify-items-center gap-4">
+        <GamePicker />
+        <button
+          class="belch-btn"
+          disabled={gs()!.players.length < 3}
+          onClick={() => send({ t: "start" })}
+        >
+          {gs()!.players.length < 3 ? `Need ${3 - gs()!.players.length} more` : "Play Again"}
+        </button>
+      </footer>
     </main>
   )
 }
@@ -563,10 +681,14 @@ function GuestView() {
           <GuestStatus text="waiting for host to start…" />
         </Match>
         <Match when={gs()!.phase === "writing"}>
-          <GuestWriting />
+          <Show when={gs()!.gameType === "fibbage"} fallback={<GuestWriting />}>
+            <GuestFibbageWriting />
+          </Show>
         </Match>
         <Match when={gs()!.phase === "voting"}>
-          <GuestVoting />
+          <Show when={gs()!.gameType === "fibbage"} fallback={<GuestVoting />}>
+            <GuestFibbageVoting />
+          </Show>
         </Match>
         <Match when={gs()!.phase === "reveal"}>
           <GuestReveal />
@@ -576,6 +698,86 @@ function GuestView() {
         </Match>
       </Switch>
     </Show>
+  )
+}
+
+function GuestFibbageWriting() {
+  const f = () => gs()!.fibbage!
+  let input!: HTMLInputElement
+  return (
+    <Switch>
+      <Match when={mySubmitted() || f().lies[me()!.id]}>
+        <GuestStatus text="lie locked in ✓" />
+      </Match>
+      <Match when={true}>
+        <main class="grid min-h-screen place-items-center p-6">
+          <form
+            class="grid w-full max-w-md gap-4"
+            onSubmit={(e) => {
+              e.preventDefault()
+              const v = input.value.trim()
+              if (!v) return
+              setMySubmitted(true)
+              send({ t: "submit", answer: v })
+            }}
+          >
+            <h2 class="display m-0 text-center text-primary text-2xl leading-tight">
+              {f().question}
+            </h2>
+            <Countdown compact />
+            <input
+              ref={input}
+              class="belch-input lower"
+              placeholder="make up a lie"
+              maxLength={80}
+              autocomplete="off"
+              autofocus
+            />
+            <button class="belch-btn !bg-accent" type="submit">
+              Submit
+            </button>
+          </form>
+        </main>
+      </Match>
+    </Switch>
+  )
+}
+
+function GuestFibbageVoting() {
+  const f = () => gs()!.fibbage!
+  const hasVoted = () => myVoted() || f().votes[me()!.id] !== undefined
+  const choices = () => f().choices.filter((choice) => choice.authorId !== me()!.id)
+
+  function castVote(choice: string) {
+    setMyVoted(true)
+    send({ t: "vote", choice })
+  }
+
+  return (
+    <Switch>
+      <Match when={hasVoted()}>
+        <GuestStatus text="vote locked in ✓" />
+      </Match>
+      <Match when={true}>
+        <main class="grid min-h-screen place-items-center p-6">
+          <div class="grid w-full max-w-md gap-4">
+            <h3 class="display m-0 text-center text-primary leading-tight">{f().question}</h3>
+            <For each={choices()}>
+              {(choice, i) => (
+                <button
+                  class={`belch-btn whitespace-normal normal-case leading-snug ${
+                    i() % 2 ? "!bg-accent" : ""
+                  }`}
+                  onClick={() => castVote(choice.id)}
+                >
+                  {choice.text}
+                </button>
+              )}
+            </For>
+          </div>
+        </main>
+      </Match>
+    </Switch>
   )
 }
 
@@ -731,6 +933,10 @@ function RoundHeader(props: { code: string }) {
   )
 }
 
+function gameName(gameType: GameType) {
+  return gameType === "fibbage" ? "FIBBAGE" : "QUIPLASH"
+}
+
 function secondsLeft() {
   const endsAt = gs()?.phaseEndsAt
   if (!endsAt) return null
@@ -810,6 +1016,28 @@ function RevealCard(props: {
           {author()?.name ?? "?"}
         </span>
         <span class="text-2xl">
+          {props.votes} {props.votes === 1 ? "vote" : "votes"}
+        </span>
+      </div>
+    </div>
+  )
+}
+
+function FibbageRevealCard(props: { choice: FibbageChoice; votes: number }) {
+  const author = () =>
+    props.choice.authorId ? gs()!.players.find((p) => p.id === props.choice.authorId) : null
+  return (
+    <div
+      class="grid gap-3 rounded-3xl border-4 border-ink p-5 text-ink"
+      style={{
+        background: props.choice.isTruth ? "var(--color-primary)" : "var(--color-paper)",
+        "box-shadow": "0 8px 0 var(--color-ink)",
+      }}
+    >
+      <div class="display text-2xl leading-tight">{props.choice.text}</div>
+      <div class="flex items-center justify-between gap-3">
+        <span class="font-bold">{props.choice.isTruth ? "TRUTH" : (author()?.name ?? "?")}</span>
+        <span class="display text-xl">
           {props.votes} {props.votes === 1 ? "vote" : "votes"}
         </span>
       </div>

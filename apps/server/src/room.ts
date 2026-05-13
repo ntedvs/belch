@@ -2,6 +2,9 @@ import { DurableObject } from "cloudflare:workers"
 import {
   chooseAuthorPair,
   ClientMessage,
+  type FibbageChoice,
+  type FibbageRound,
+  type GameType,
   type Matchup,
   PersistedRoomState,
   type PersistedRoomState as PersistedRoomStateData,
@@ -13,9 +16,11 @@ import {
   POINTS_PER_VOTE,
   PROMPTS_PER_GAME,
   VOTING_SECONDS,
+  visibleFibbageFor,
   visibleMatchupFor,
   WRITING_SECONDS,
 } from "@belch/protocol"
+import { pickFibbageQuestions } from "./games/fibbage"
 import { pickPrompts } from "./games/quiplash"
 
 type Attachment = { role: "host" | "guest"; playerId?: string }
@@ -30,20 +35,26 @@ const DEFAULTS: PersistedRoomStateData = {
   scores: [],
   authorCounts: [],
   prompts: [],
+  fibbageTruths: [],
   promptIdx: 0,
   matchup: null,
+  fibbage: null,
   phaseEndsAt: null,
   phase: "lobby",
+  gameType: "quiplash",
 }
 
 export class Room extends DurableObject {
   private players!: Map<string, Player>
   private playerTokens!: Map<string, string>
   private scores!: Map<string, number>
+  private gameType!: GameType
   private authorCounts!: Map<string, number>
   private prompts!: string[]
+  private fibbageTruths!: string[]
   private promptIdx!: number
   private matchup!: Matchup | null
+  private fibbage!: FibbageRound | null
   private phaseEndsAt!: number | null
   private phase!: Phase
   private ready: Promise<void>
@@ -57,11 +68,14 @@ export class Room extends DurableObject {
       this.players = new Map(s.players)
       this.playerTokens = new Map(s.playerTokens ?? [])
       this.hostToken = s.hostToken ?? null
+      this.gameType = s.gameType ?? "quiplash"
       this.scores = new Map(s.scores)
       this.authorCounts = new Map(s.authorCounts ?? [])
       this.prompts = s.prompts
+      this.fibbageTruths = s.fibbageTruths ?? []
       this.promptIdx = s.promptIdx
       this.matchup = s.matchup
+      this.fibbage = s.fibbage ?? null
       this.phaseEndsAt = s.phaseEndsAt ?? null
       this.phase = s.phase
     })
@@ -70,14 +84,17 @@ export class Room extends DurableObject {
   private async persist() {
     const s: PersistedRoomStateData = {
       created: this.hostToken !== null,
+      gameType: this.gameType,
       hostToken: this.hostToken,
       playerTokens: [...this.playerTokens.entries()],
       players: [...this.players.entries()],
       scores: [...this.scores.entries()],
       authorCounts: [...this.authorCounts.entries()],
       prompts: this.prompts,
+      fibbageTruths: this.fibbageTruths,
       promptIdx: this.promptIdx,
       matchup: this.matchup,
+      fibbage: this.fibbage,
       phaseEndsAt: this.phaseEndsAt,
       phase: this.phase,
     }
@@ -93,9 +110,16 @@ export class Room extends DurableObject {
 
     if (request.method === "POST" && url.pathname === "/create") {
       if (this.hostToken) return new Response("room exists", { status: 409 })
-      const body = (await request.json().catch(() => null)) as { hostToken?: string } | null
+      const body = (await request.json().catch(() => null)) as {
+        hostToken?: string
+        gameType?: GameType
+      } | null
       if (!body?.hostToken) return new Response("missing host token", { status: 400 })
+      if (body.gameType && body.gameType !== "quiplash" && body.gameType !== "fibbage") {
+        return new Response("bad game type", { status: 400 })
+      }
       this.hostToken = body.hostToken
+      this.gameType = body.gameType ?? "quiplash"
       await this.persist()
       return new Response("created")
     }
@@ -131,8 +155,13 @@ export class Room extends DurableObject {
     switch (msg.t) {
       case "hello":
         return this.onHello(ws, msg)
+      case "setGame":
+        if (att.role === "host") await this.setGame(msg.gameType)
+        return
       case "start":
-        if (att.role === "host" && this.phase === "lobby") await this.startGame()
+        if (att.role === "host" && (this.phase === "lobby" || this.phase === "final")) {
+          await this.startGame()
+        }
         return
       case "submit":
         if (att.playerId) await this.onSubmit(att.playerId, msg.answer)
@@ -205,8 +234,10 @@ export class Room extends DurableObject {
     this.scores = new Map()
     this.authorCounts = new Map()
     this.prompts = []
+    this.fibbageTruths = []
     this.promptIdx = 0
     this.matchup = null
+    this.fibbage = null
     this.phaseEndsAt = null
     this.phase = "lobby"
     this.hostToken = null
@@ -243,8 +274,8 @@ export class Room extends DurableObject {
       return
     }
 
-    // Fresh join — only allowed in lobby.
-    if (this.phase !== "lobby") {
+    // Fresh join — only allowed while the room is between games.
+    if (this.phase !== "lobby" && this.phase !== "final") {
       return this.send(ws, { t: "error", message: "game already started" })
     }
     const id = crypto.randomUUID()
@@ -271,17 +302,41 @@ export class Room extends DurableObject {
 
   private async startGame() {
     if (this.players.size < 3) return
+    if (this.gameType === "fibbage") return this.startFibbage()
+    return this.startQuiplash()
+  }
+
+  private async setGame(gameType: GameType) {
+    if (this.phase !== "lobby" && this.phase !== "final") return
+    this.gameType = gameType
+    this.clearGameState()
+    await this.persist()
+    this.broadcastState()
+  }
+
+  private clearGameState() {
+    this.authorCounts = new Map()
+    this.prompts = []
+    this.fibbageTruths = []
+    this.promptIdx = 0
+    this.matchup = null
+    this.fibbage = null
+    this.phaseEndsAt = null
+  }
+
+  private async startQuiplash() {
     this.prompts = pickPrompts(PROMPTS_PER_GAME)
+    this.fibbageTruths = []
     this.promptIdx = 0
     this.authorCounts = new Map()
     for (const id of this.players.keys()) {
       this.scores.set(id, 0)
       this.authorCounts.set(id, 0)
     }
-    await this.beginRound()
+    await this.beginQuiplashRound()
   }
 
-  private async beginRound() {
+  private async beginQuiplashRound() {
     const prompt = this.prompts[this.promptIdx]
     if (!prompt) return this.endGame()
     const authors = this.pickTwo()
@@ -293,6 +348,7 @@ export class Room extends DurableObject {
       votes: {},
       revealed: false,
     }
+    this.fibbage = null
     for (const id of authors) this.authorCounts.set(id, (this.authorCounts.get(id) ?? 0) + 1)
     this.phase = "writing"
     this.phaseEndsAt = Date.now() + WRITING_SECONDS * 1000
@@ -311,6 +367,7 @@ export class Room extends DurableObject {
   }
 
   private async onSubmit(playerId: string, answer: string) {
+    if (this.gameType === "fibbage") return this.onFibbageSubmit(playerId, answer)
     if (this.phase !== "writing" || !this.matchup) return
     const idx = this.matchup.authors.indexOf(playerId)
     if (idx === -1) return
@@ -325,6 +382,7 @@ export class Room extends DurableObject {
   }
 
   private async finishWriting() {
+    if (this.gameType === "fibbage") return this.finishFibbageWriting()
     if (this.phase !== "writing" || !this.matchup) return
     if (!this.matchup.answers[0]) this.matchup.answers[0] = NO_ANSWER_TEXT
     if (!this.matchup.answers[1]) this.matchup.answers[1] = NO_ANSWER_TEXT
@@ -334,7 +392,12 @@ export class Room extends DurableObject {
     this.broadcastState()
   }
 
-  private async onVote(playerId: string, choice: 0 | 1) {
+  private async onVote(playerId: string, choice: 0 | 1 | string) {
+    if (this.gameType === "fibbage") {
+      if (typeof choice === "string") await this.onFibbageVote(playerId, choice)
+      return
+    }
+    if (choice !== 0 && choice !== 1) return
     if (this.phase !== "voting" || !this.matchup) return
     if (this.matchup.authors.includes(playerId)) return
     if (this.matchup.votes[playerId] !== undefined) return
@@ -343,9 +406,10 @@ export class Room extends DurableObject {
   }
 
   private async maybeReveal() {
+    if (this.gameType === "fibbage") return this.maybeFibbageReveal()
     if (!this.matchup) return
     const eligible = this.connectedPlayerIds().filter((id) => !this.matchup!.authors.includes(id))
-    if (eligible.length === 0 || eligible.every((id) => id in this.matchup!.votes)) {
+    if (eligible.every((id) => id in this.matchup!.votes)) {
       await this.reveal()
       return
     }
@@ -354,10 +418,14 @@ export class Room extends DurableObject {
   }
 
   private async reveal() {
+    if (this.gameType === "fibbage") return this.revealFibbage()
     if (!this.matchup) return
     let v0 = 0
     let v1 = 0
-    for (const c of Object.values(this.matchup.votes)) c === 0 ? v0++ : v1++
+    for (const c of Object.values(this.matchup.votes)) {
+      if (c === 0) v0++
+      else v1++
+    }
     const [a0, a1] = this.matchup.authors
     const award = (id: string, votes: number, otherVotes: number) => {
       const base = votes * POINTS_PER_VOTE
@@ -383,8 +451,103 @@ export class Room extends DurableObject {
     if (this.promptIdx >= this.prompts.length) {
       await this.endGame()
     } else {
-      await this.beginRound()
+      if (this.gameType === "fibbage") await this.beginFibbageRound()
+      else await this.beginQuiplashRound()
     }
+  }
+
+  private async startFibbage() {
+    const questions = pickFibbageQuestions(PROMPTS_PER_GAME)
+    this.prompts = questions.map((q) => q.question)
+    this.fibbageTruths = questions.map((q) => q.truth)
+    this.promptIdx = 0
+    this.matchup = null
+    for (const id of this.players.keys()) this.scores.set(id, 0)
+    await this.beginFibbageRound()
+  }
+
+  private async beginFibbageRound() {
+    const question = this.prompts[this.promptIdx]
+    const truth = this.fibbageTruths[this.promptIdx]
+    if (!question || !truth) return this.endGame()
+    this.matchup = null
+    this.fibbage = { question, truth, lies: {}, choices: [], votes: {}, revealed: false }
+    this.phase = "writing"
+    this.phaseEndsAt = Date.now() + WRITING_SECONDS * 1000
+    await this.persist()
+    this.broadcastState()
+  }
+
+  private async onFibbageSubmit(playerId: string, answer: string) {
+    if (this.phase !== "writing" || !this.fibbage) return
+    if (this.fibbage.lies[playerId]) return
+    this.fibbage.lies[playerId] = answer.slice(0, 80)
+    const eligible = this.connectedPlayerIds()
+    if (eligible.length > 0 && eligible.every((id) => this.fibbage!.lies[id])) {
+      await this.finishFibbageWriting()
+      return
+    }
+    await this.persist()
+    this.broadcastState()
+  }
+
+  private async finishFibbageWriting() {
+    if (this.phase !== "writing" || !this.fibbage) return
+    for (const id of this.connectedPlayerIds()) {
+      if (!this.fibbage.lies[id]) this.fibbage.lies[id] = NO_ANSWER_TEXT
+    }
+    const choices: FibbageChoice[] = [
+      { id: "truth", text: this.fibbage.truth, authorId: null, isTruth: true },
+      ...Object.entries(this.fibbage.lies).map(([authorId, text]) => ({
+        id: `lie:${authorId}`,
+        text,
+        authorId,
+        isTruth: false,
+      })),
+    ]
+    this.fibbage.choices = this.shuffle(choices)
+    this.phase = "voting"
+    this.phaseEndsAt = Date.now() + VOTING_SECONDS * 1000
+    await this.persist()
+    this.broadcastState()
+  }
+
+  private async onFibbageVote(playerId: string, choiceId: string) {
+    if (this.phase !== "voting" || !this.fibbage) return
+    if (this.fibbage.votes[playerId] !== undefined) return
+    const choice = this.fibbage.choices.find((c) => c.id === choiceId)
+    if (!choice || choice.authorId === playerId) return
+    this.fibbage.votes[playerId] = choiceId
+    await this.maybeFibbageReveal()
+  }
+
+  private async maybeFibbageReveal() {
+    if (!this.fibbage) return
+    const eligible = this.connectedPlayerIds()
+    if (eligible.every((id) => this.fibbage!.votes[id] !== undefined)) {
+      await this.revealFibbage()
+      return
+    }
+    await this.persist()
+    this.broadcastState()
+  }
+
+  private async revealFibbage() {
+    if (!this.fibbage) return
+    for (const [voterId, choiceId] of Object.entries(this.fibbage.votes)) {
+      const choice = this.fibbage.choices.find((c) => c.id === choiceId)
+      if (!choice) continue
+      if (choice.isTruth) {
+        this.scores.set(voterId, (this.scores.get(voterId) ?? 0) + 1000)
+      } else if (choice.authorId) {
+        this.scores.set(choice.authorId, (this.scores.get(choice.authorId) ?? 0) + 500)
+      }
+    }
+    this.fibbage.revealed = true
+    this.phase = "reveal"
+    this.phaseEndsAt = null
+    await this.persist()
+    this.broadcastState()
   }
 
   private async endGame() {
@@ -400,6 +563,7 @@ export class Room extends DurableObject {
   private snapshot(viewer?: Attachment) {
     return {
       phase: this.phase,
+      gameType: this.gameType,
       players: [...this.players.values()],
       connectedPlayerIds: this.connectedPlayerIds(),
       scores: Object.fromEntries(this.scores),
@@ -407,7 +571,19 @@ export class Room extends DurableObject {
       totalRounds: this.prompts.length || PROMPTS_PER_GAME,
       phaseEndsAt: this.phaseEndsAt,
       matchup: visibleMatchupFor({ matchup: this.matchup, phase: this.phase, viewer }),
+      fibbage: visibleFibbageFor({ round: this.fibbage, phase: this.phase, viewer }),
     }
+  }
+
+  private shuffle<T>(items: T[]) {
+    const out = [...items]
+    for (let i = out.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1))
+      const tmp = out[i]!
+      out[i] = out[j]!
+      out[j] = tmp
+    }
+    return out
   }
 
   private connectedPlayerIds() {
