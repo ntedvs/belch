@@ -16,9 +16,9 @@
     "typecheck": "bun --filter '*' typecheck"
   },
   "devDependencies": {
-    "@types/node": "25.7.0",
-    "oxfmt": "0.49.0",
-    "typescript": "6.0.3",
-    "wrangler": "4.90.1"
+    "@types/node": "26.1.1",
+    "oxfmt": "0.59.0",
+    "typescript": "7.0.2",
+    "wrangler": "4.113.0"
   }
 }
